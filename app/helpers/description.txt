@@ -1,0 +1,4 @@
+Helpers
+-------
+
+Los archivos .php en esta carpeta son incluidos automaticamente excepto que comiencen con underscore ("_")

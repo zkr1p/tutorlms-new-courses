@@ -1,0 +1,105 @@
+DOC
+===
+
+# CronJob
+
+- Debe crearse un cronjob que apunte a:
+
+    https://{dominio}/tutor/cronjob
+o
+    https://{dominio}/cronjob
+
+
+O si fuera posible seria aun mejor apuntar internamente a:
+
+    php {ruta-a-wordpress}/wp-content/plugins/tutorlms-new-courses/cron.php
+
+Ej:
+
+    /usr/local/bin/php /home/designer/public_html/wp-content/plugins/tutorlms-new-courses/cron.php
+
+
+Nota:
+
+Para la version de WooCommmerce Subscriptions 5.1.* y posiblemente anteriores no se requiere accion adicional.
+
+
+# Mejoras
+
+- Si un curso es borrado no es removido de "Inscripciones" pero no tiene ning繳n efecto justamente porque el curso ya no se puede tomar.
+
+Ej:
+
+GET https://taxes4pros.com/tutor/enrollment?user_id=171
+
+{
+    "data": {
+        "enrollments": [
+            {
+                "ID": "21109",
+                "post_title": "Inscritos en el curso &ndash; 5 de abril de 2024 @ 02:59",
+                "course_id": "21105",
+                "student_id": "171",
+                "post_date": "2024-04-05 02:59:25"
+            }
+        ]
+    },
+    "status_code": 200,
+    "error": []
+}
+
+Esa inscripci籀n es a un curso que fue borrado
+
+---------------------------------------------------------------
+---------------------------------------------------------------
+---------------------------------------------------------------
+
+Actualizaci車n de Funciones 20/04/2025 Version de tutor lms actualizada a 3.4.2
+Archivo principal modificado:
+/wp-content/plugins/tutorlms-new-courses-1/libs/TutorLMSWooSubsAutomation.php
+
+---------------------------------------------------------------
+
+Objetivo
+Automatizar el enrolamiento y desenrolamiento de usuarios en los cursos de TutorLMS, basado en:
+-Suscripci車n activa
+-Compra individual del curso
+-Acceso VIP (correo en lista permitida)
+---------------------------------------------------------------
+l車gica aplicada
+1. Si el usuario tiene suscripci車n activa:
+Se enrola autom芍ticamente en todos los cursos disponibles.
+No se desenrola de ninguno.
+
+2. Si el usuario NO tiene suscripci車n activa:
+Se desenrola de todos los cursos excepto:
+Cursos comprados individualmente.
+Cursos con acceso VIP (correo registrado en el campo students_allowed_to_enroll).
+---------------------------------------------------------------
+Acceso VIP
+El campo personalizado utilizado para validar acceso VIP es:
+Meta key del curso: students_allowed_to_enroll
+Formato esperado: listado de correos electr車nicos (uno por l赤nea o separados por coma)
+---------------------------------------------------------------
+Logs
+Los enrolamientos y desenrolamientos quedan registrados con Logger::log(), permitiendo auditar eventos como:
+
+Enrrolando para user_id=32 y course_id=102
+Desenrolando user_id=32 del course_id=103
+Conservando acceso al course_id=105
+
+---------------------------------------------------------------
+Endpoint manual:
+Para forzar la ejecuci車n del cronjob desde navegador (modo testing):
+https://taxes4pros.com/cronjob
+
+Puntos finales
+Asegurarse de que los cursos est谷n correctamente vinculados con sus productos en WooCommerce (meta _tutor_course_product_id).
+
+Validar que el campo students_allowed_to_enroll tenga los correos correctos.
+
+Revisar logs peri車dicamente para verificar comportamiento.
+
+---------------------------------------------------------------
+---------------------------------------------------------------
+---------------------------------------------------------------

@@ -7,7 +7,7 @@ use boctulus\TutorNewCourses\core\libs\Products;
 use boctulus\TutorNewCourses\core\libs\WCSubscriptions;
 
 /**
- * VERSIÓN OPTIMIZADA
+ * VERSIÓN OPTIMIZADA Y CORREGIDA
  * Gestiona la lógica de los límites de productos por suscripción de forma eficiente.
  */
 class WCSubscriptionsExtended extends WCSubscriptions
@@ -55,7 +55,7 @@ class WCSubscriptionsExtended extends WCSubscriptions
     }
 
     /**
-     * VERSIÓN OPTIMIZADA
+     * VERSIÓN OPTIMIZADA Y CORREGIDA
      * Calcula cuántos productos gratuitos le quedan a un usuario en su ciclo de suscripción actual.
      * Utiliza una consulta directa y eficiente a la base de datos en lugar de recorrer todos los pedidos.
      *
@@ -69,6 +69,9 @@ class WCSubscriptionsExtended extends WCSubscriptions
         }
 
         if (empty($user_id) || !$this->hasActive($user_id)) {
+            if (defined('WP_DEBUG') && WP_DEBUG) {
+                error_log("DEBUG SUBS: Usuario ID $user_id no tiene suscripción activa o es inválido. Retornando 0.");
+            }
             return 0;
         }
 
@@ -79,6 +82,10 @@ class WCSubscriptionsExtended extends WCSubscriptions
 
         // Determina el límite máximo basado en la frecuencia de la suscripción del usuario.
         $freq = $this->getRenovationFrequency($user_id);
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            error_log("DEBUG SUBS: Frecuencia de suscripción para usuario ID $user_id: '$freq'");
+        }
+
         $max_downloads = 0;
         foreach ($p_limits as $p_limit) {
             if ($p_limit['interval'] === $freq) {
@@ -87,17 +94,41 @@ class WCSubscriptionsExtended extends WCSubscriptions
             }
         }
 
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            error_log("DEBUG SUBS: Límite de adquisiciones encontrado para '$freq': $max_downloads");
+        }
+        
+        // --- INICIO DE LA SOLUCIÓN ---
+        // Si la suscripción es anual, tienen acceso ilimitado a adquirir productos.
+        // No necesitamos ejecutar la costosa consulta a la base de datos.
+        if ($freq === 'year') {
+            if (defined('WP_DEBUG') && WP_DEBUG) {
+                error_log("DEBUG SUBS: Suscripción anual detectada para usuario ID $user_id. Retornando cupo ilimitado ($max_downloads) sin consultar la BD.");
+            }
+            return $max_downloads; // Devuelve 99999 directamente.
+        }
+        // --- FIN DE LA SOLUCIÓN ---
+
         // Si no se encontró un límite para la frecuencia del usuario, no se le permite descargar.
         if ($max_downloads === 0) {
+            if (defined('WP_DEBUG') && WP_DEBUG) {
+                error_log("DEBUG SUBS: No se encontró límite de adquisición para el usuario ID $user_id con frecuencia '$freq'. Retornando 0.");
+            }
             return 0;
         }
         
-        // Determina el período de tiempo a revisar (últimos 30 días para mensual, último año para anual).
+        // Determina el período de tiempo a revisar (solo para suscripciones que no sean anuales).
         $date_query_after = '';
         if ($freq === 'month') {
             $date_query_after = date('Y-m-d H:i:s', strtotime('-30 days'));
-        } elseif ($freq === 'year') {
-            $date_query_after = date('Y-m-d H:i:s', strtotime('-1 year'));
+        }
+        // Puedes añadir más casos como 'week' si es necesario.
+        
+        if (empty($date_query_after)){
+             if (defined('WP_DEBUG') && WP_DEBUG) {
+                error_log("DEBUG SUBS: No se definió un rango de fecha para la frecuencia '$freq' del usuario ID $user_id. La consulta contará todos los pedidos históricos.");
+            }
+             $date_query_after = '1970-01-01 00:00:00'; // Fallback para evitar error SQL si se añade una frecuencia sin rango de fecha
         }
 
         global $wpdb;
@@ -121,7 +152,12 @@ class WCSubscriptionsExtended extends WCSubscriptions
         ", $user_id, $date_query_after);
         
         $downloads_count = (int) $wpdb->get_var($query);
+        $remaining = max(0, $max_downloads - $downloads_count);
 
-        return max(0, $max_downloads - $downloads_count);
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            error_log("DEBUG SUBS: Usuario ID $user_id ha adquirido $downloads_count productos en el periodo. Le quedan $remaining adquisiciones.");
+        }
+
+        return $remaining;
     }
 }

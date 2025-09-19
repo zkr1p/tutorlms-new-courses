@@ -46,6 +46,10 @@ return [
         [
             'interval' => 'month',
             'value'    => 5            // el valor del requerimiento es: 5
+        ],
+        [
+            'interval' => 'year',   // <-- AÑADIDO: La regla que faltaba para anuales
+            'value'    => 99999     // Cupo "ilimitado" para suscriptores anuales
         ]
     ],
 

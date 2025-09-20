@@ -116,120 +116,158 @@ function optimized_reset_downloads_on_renewal($subscription) {
 
 
 // =========================================================================
-// INICIO DE LA ARQUITECTURA FINAL Y OPTIMIZADA (VERSIÓN DE ALTO RENDIMIENTO)
+// INICIO DE LA ARQUITECTURA FINAL, OPTIMIZADA Y SEGURA (A PRUEBA DE BUCLES)
 // =========================================================================
 
 /**
- * Función de ayuda para obtener el estado del suscriptor UNA SOLA VEZ por carga de página.
- * Utiliza una variable estática (un tipo de caché interna) para "recordar" el resultado.
- * Esto reduce drásticamente las consultas a la base de datos en páginas con muchos productos.
+ * Función de ayuda para obtener y cachear el estado del usuario y sus descargas.
+ * Se ejecuta UNA SOLA VEZ por carga de página, garantizando un rendimiento óptimo.
  *
- * @return array{is_subscriber: bool, user_id: int|null}
+ * @return array{is_subscriber: bool, user_id: int|null, downloads: array}
  */
-function t4p_get_cached_user_status() {
-    // La variable 'static' conserva su valor entre llamadas a la función durante una misma carga de página.
+function t4p_get_cached_user_and_downloads_status() {
     static $status = null;
+    if ($status !== null) return $status;
 
-    // Si ya hemos calculado el estado, lo devolvemos inmediatamente sin hacer nada más.
-    if ($status !== null) {
-        return $status;
-    }
-
-    // Si el usuario no ha iniciado sesión, establecemos el estado y lo devolvemos.
+    // --- GUARDIA 1: Usuario no logueado (Invitado) ---
+    // Si no ha iniciado sesión, establecemos un estado "invitado" y salimos inmediatamente.
+    // Coste: 0 consultas a la base de datos.
     if (!is_user_logged_in()) {
-        $status = ['is_subscriber' => false, 'user_id' => null];
+        $status = ['is_subscriber' => false, 'user_id' => null, 'downloads' => []];
         return $status;
     }
 
-    // Si es la primera vez que se llama a la función para un usuario logueado,
-    // hacemos la consulta a la base de datos.
+    // A partir de aquí, sabemos que el usuario ha iniciado sesión.
     $user_id = get_current_user_id();
     $subs_checker = new \boctulus\TutorNewCourses\libs\WCSubscriptionsExtended();
-    
-    // Guardamos el resultado en nuestra variable 'static' para las próximas veces.
+    $is_subscriber = $subs_checker->hasActive($user_id);
+
+    // --- GUARDIA 2: Usuario logueado pero NO suscriptor ---
+    // Si no es suscriptor, no necesitamos obtener su lista de descargas para la lógica de precios.
+    if (!$is_subscriber) {
+        $status = ['is_subscriber' => false, 'user_id' => $user_id, 'downloads' => []]; // Descargas vacío por eficiencia.
+        return $status;
+    }
+
+    // --- SOLO EL SUSCRIPTOR ACTIVO LLEGA AQUÍ ---
+    // Solo si el usuario es un suscriptor activo, hacemos la consulta "pesada" de obtener sus descargas.
     $status = [
-        'is_subscriber' => $subs_checker->hasActive($user_id),
-        'user_id' => $user_id
+        'is_subscriber' => true,
+        'user_id'       => $user_id,
+        'downloads'     => wc_get_customer_available_downloads($user_id)
     ];
-    
     return $status;
 }
 
 /**
- * Filtro de precio principal OPTIMIZADO.
+ * Función de ayuda para comprobar si a un usuario le quedan descargas para un producto.
+ */
+function t4p_user_has_downloads_left_for_product($product_id, $all_downloads) {
+    if (empty($all_downloads)) return false;
+    foreach ($all_downloads as $download) {
+        if ($download['product_id'] == $product_id || $download['variation_id'] == $product_id) {
+            return ($download['downloads_remaining'] === '' || (int) $download['downloads_remaining'] > 0);
+        }
+    }
+    return false;
+}
+
+/**
+ * Filtro de precio principal OPTIMIZADO con "Guard Clauses".
  */
 add_filter('woocommerce_get_price_html', function($price_html, $product) {
-    if (is_admin() || !is_object($product)) {
-        return $price_html;
-    }
+    if (is_admin() || !is_object($product)) return $price_html;
 
-    // Obtenemos el estado del usuario de nuestra función optimizada.
-    $status = t4p_get_cached_user_status();
+    $status = t4p_get_cached_user_and_downloads_status();
+    
+    // --- GUARDIA 1: Si no es suscriptor, no hacemos NADA. ---
+    // Esto cubre a invitados y usuarios normales, que salen de aquí instantáneamente.
+    if (!$status['is_subscriber']) return $price_html;
 
-    if ($status['is_subscriber']) {
-        if (wc_customer_bought_product('', $status['user_id'], $product->get_id())) {
-            return $price_html; 
-        }
+    $user_id = $status['user_id'];
+    $product_id = $product->get_id();
+    
+    // Lógica solo para suscriptores
+    $has_bought = wc_customer_bought_product('', $user_id, $product_id);
+    $has_downloads_left = t4p_user_has_downloads_left_for_product($product_id, $status['downloads']);
 
-        if ($product->is_type('variable')) {
-            $prices = $product->get_variation_prices(true);
-            if (empty($prices['price'])) return $price_html;
-            $max_price = end($prices['price']);
-            foreach ($product->get_children() as $child_id) {
-                if (\boctulus\TutorNewCourses\libs\WCSubscriptionsExtended::isForSubscription($child_id)) {
-                    return wc_price(0) . ' - ' . wc_price($max_price);
-                }
+    if ($has_bought && !$has_downloads_left) return $product->get_price_html();
+    if ($has_bought && $has_downloads_left) return $price_html;
+
+    if ($product->is_type('variable')) {
+        $prices = $product->get_variation_prices(true);
+        if (empty($prices['price'])) return $price_html;
+        $max_price = end($prices['price']);
+        foreach ($product->get_children() as $child_id) {
+            if (\boctulus\TutorNewCourses\libs\WCSubscriptionsExtended::isForSubscription($child_id)) {
+                return wc_price(0) . ' - ' . wc_price($max_price);
             }
         }
-        if ($product->is_type('simple') && \boctulus\TutorNewCourses\libs\WCSubscriptionsExtended::isForSubscription($product->get_id())) {
-            return wc_price(0);
-        }
     }
-
+    if ($product->is_type('simple') && \boctulus\TutorNewCourses\libs\WCSubscriptionsExtended::isForSubscription($product_id)) {
+        return wc_price(0);
+    }
+    
     return $price_html;
 }, 100, 2);
 
 /**
- * Filtro de precio de variación OPTIMIZADO.
+ * Filtro de precio de variación OPTIMIZADO y a prueba de bucles.
  */
 add_filter('woocommerce_available_variation', function($variation_data, $product, $variation) {
-    if (empty($variation_data['price_html'])) {
-         $variation_data['price_html'] = '<span class="price">' . $variation->get_price_html() . '</span>';
-    }
+    $status = t4p_get_cached_user_and_downloads_status();
+    
+    // --- GUARDIA: Si no es suscriptor, no hacemos NADA. ---
+    if (!$status['is_subscriber']) return $variation_data;
 
-    // Obtenemos el estado del usuario de nuestra función optimizada.
-    $status = t4p_get_cached_user_status();
+    $user_id = $status['user_id'];
+    $variation_id = $variation->get_id();
+    $has_bought = wc_customer_bought_product('', $user_id, $variation_id);
+    $has_downloads_left = t4p_user_has_downloads_left_for_product($variation_id, $status['downloads']);
 
-    if ($status['is_subscriber']) {
-        if ($variation->is_downloadable() && \boctulus\TutorNewCourses\libs\WCSubscriptionsExtended::isForSubscription($variation->get_id())) {
-            $variation_data['price_html'] = wc_format_sale_price(wc_get_price_to_display($variation, ['price' => $variation->get_regular_price()]), wc_get_price_to_display($variation, ['price' => 0]));
-        }
+    if ($has_bought && !$has_downloads_left) {
+        $price = wc_get_price_to_display($variation);
+        $variation_data['price_html'] = wc_price($price);
+    } 
+    elseif (!$has_bought && $variation->is_downloadable() && \boctulus\TutorNewCourses\libs\WCSubscriptionsExtended::isForSubscription($variation_id)) {
+        $variation_data['price_html'] = wc_format_sale_price(
+            wc_get_price_to_display($variation, ['price' => $variation->get_regular_price()]),
+            wc_get_price_to_display($variation, ['price' => 0])
+        );
     }
     
     return $variation_data;
 }, 100, 3);
 
 /**
- * Filtro de botón de la tienda OPTIMIZADO.
+ * Filtro de botón de la tienda OPTIMIZADO Y ROBUSTO.
  */
 add_filter('woocommerce_loop_add_to_cart_link', function($button_html, $product, $args) {
-    if (is_admin() || !is_object($product)) {
-        return $button_html;
-    }
+    if (is_admin() || !is_object($product)) return $button_html;
     
-    // Obtenemos el estado del usuario de nuestra función optimizada.
-    $status = t4p_get_cached_user_status();
+    $status = t4p_get_cached_user_and_downloads_status();
+
+    // --- GUARDIA: Si no ha iniciado sesión, no hacemos NADA. ---
+    if (!$status['user_id']) return $button_html;
+
+    $user_id = $status['user_id'];
+    $product_id = $product->get_id();
     
-    if ($status['user_id'] && wc_customer_bought_product('', $status['user_id'], $product->get_id())) {
+    // Esta lógica sí se aplica a cualquier usuario logueado, sea suscriptor o no.
+    $has_bought = wc_customer_bought_product('', $user_id, $product_id);
+    $has_downloads_left = t4p_user_has_downloads_left_for_product($product_id, $status['downloads']);
+
+    if ($has_bought && $has_downloads_left) {
         $downloads_url = wc_get_account_endpoint_url('downloads');
         $output = '<div class="product-owned-wrapper">';
-        $output .= '<span class="disponible-notice" style="display: block; margin-bottom: 10px; font-weight: bold; color: #28a745;">Disponible en tu cuenta</span>';
+        $output .= '<span class="disponible-notice">Disponible en tu cuenta</span>';
         $output .= '<a href="' . esc_url($downloads_url) . '" class="button">' . __('Ir a Mis Descargas', 'tutorstarter') . '</a>';
         $output .= '</div>';
         return $output;
     }
     
-    if ($status['is_subscriber'] && \boctulus\TutorNewCourses\libs\WCSubscriptionsExtended::isForSubscription($product->get_id()) && $product->is_type('simple')) {
+    // Esta lógica solo se aplica a suscriptores.
+    if ($status['is_subscriber'] && !$has_bought && \boctulus\TutorNewCourses\libs\WCSubscriptionsExtended::isForSubscription($product_id) && $product->is_type('simple')) {
         return sprintf(
             '<a href="%s" data-quantity="%s" class="%s" %s>%s</a>',
             esc_url($product->add_to_cart_url()),
@@ -239,6 +277,6 @@ add_filter('woocommerce_loop_add_to_cart_link', function($button_html, $product,
             esc_html(__('Obtener gratis', 'tutorstarter'))
         );
     }
-
+    
     return $button_html;
 }, 100, 3);
